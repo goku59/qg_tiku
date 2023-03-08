@@ -1,4 +1,281 @@
 /**
+ * 答题
+ */
+//答案去符号
+function do_contest() {
+    while (!text("开始").exists());
+    var i = 0;
+    var img = images.inRange(captureScreen(), "#000000", "#444444");
+  	var img2 = captureScreen();
+    var pos = 0;
+    var s = 0;
+    logs = [];
+    while (!text("继续挑战").exists()) {
+        // 等待下一题题目加载
+        logs.push(Date.now() + ": 等待题");
+        
+        className("android.view.View").depth(28).waitFor();
+        pos = className("android.view.View").depth(28).findOne().bounds();
+      	if (className("android.view.View").text("        ").exists()) pos = className("android.view.View").text("        ").findOne().bounds();
+        logs.push(Date.now() + pos);
+        if (i == 0) {
+          logs.push(Date.now() + ": sleep before");
+          sleep(50);
+        	img = images.inRange(captureScreen(), "#000000", "#444444");
+        	//logs.push("首次截图 end " + i);
+        }
+        else {
+          do {
+              var point = findColor(captureScreen(), "#1B1F25", {
+                  region: [pos.left, pos.top, pos.width(), pos.height()],
+                  threshold: 10,
+              });
+          } while (!point); 
+          while(!className("android.widget.RadioButton").depth(32).exists());
+          img = images.inRange(captureScreen(), "#000000", "#444444");
+        }
+        i = i + 1;
+        img = images.clip(img, pos.left, pos.top, pos.width(), device.height - pos.top);
+        if (whether_improve_accuracy == "yes") {
+            var result = baidu_ocr_api(img);
+            var question = result[0];
+            var options_text = result[1];
+        } else {
+            try {
+                var result = extract_ocr_recognize(ocr.recognize(img));
+                var question = result[0];
+                var options_text = result[1];
+            } catch (error) {
+            }
+        }
+        img.recycle();
+        log(": 题目: " + question);
+        log(": 选项: " + options_text);
+      	logs.push(Date.now() + ": 题目: " + question);
+        logs.push(Date.now() + ": 选项: " + options_text);
+        if (question) {
+          do_contest_answer(32, question, options_text);
+        }
+        else {
+            className("android.widget.RadioButton").depth(32).waitFor();
+            className("android.widget.RadioButton").depth(32).findOne(delay_time).click();
+          	log("没找到选项");
+        }
+      	log("答题完成： " + i);
+        logs.push(Date.now() + ": 答题完成： " + i);      
+        var cnt = 0;
+        // 等待新题目加载
+        while (!textMatches(/第\d题/).exists() && !text("继续挑战").exists() && !text("开始").exists()){
+        		var img3 = captureScreen();
+            var name2 = '/sdcard/Download/end_' + Date.now().toString() + "__" + cnt + '.jpg';
+            images.save(img3, name2, 'jpg', '50');
+            var point2 = findColor(img3, '#E55D79', {
+                region: [pos.left, pos.top, pos.width(), pos.height()],
+                threshold: 10,
+              });
+            if (point2) {
+                log("存在错题");
+                log(": [ERROR]" + question + "|" + options_text);
+                logs.push(Date.now() + ": [ERROR]" + question + "|" + options_text);
+                var name2 = '/sdcard/Download/error_' + Date.now().toString() + "__" + cnt + '.jpg';
+                images.save(img3, name2, 'jpg', '50');
+        		}
+          	cnt = cnt + 1;
+        }
+    }
+  	// 发送报告
+  	var title = '报告:' + Date.now().toString();
+    hamibot.postMessage(Date.now().toString(), {
+      telemetry: true, // 由用户决定是否发送报告
+      data: {
+        title: title,
+        attachments: [
+          {
+            type: 'json',
+            data: JSON.stringify({
+              // 要收集的信息，根据脚本需要自行收集，这里仅作演示
+              app: app.versionName, // Hamibot 版本
+              currentActivity: currentActivity(), // 当前运行的 Activity
+              // 自定义日志，仅作参考
+              logs: logs,
+            }),
+          },
+        ],
+      },
+    });
+}
+
+/**
+ * 百度ocr接口，传入图片返回文字和选项文字
+ * @param {image} img 传入图片
+ * @returns {string} question 文字
+ * @returns {list[string]} options_text 选项文字
+ */
+function baidu_ocr_api(img) {
+    var options_text = [];
+    var question = "";
+    //log("ocr请求前");
+    var res = http.post(
+        "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
+        {
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            access_token: token,
+            image: images.toBase64(img),
+        }
+    );
+    //log("ocr请求后")
+    var res = res.body.json();
+    log(res);
+    try {
+        var words_list = res.words_result;
+    } catch (error) {
+    }
+    if (words_list) {
+        // question是否读取完成的标志位
+        var question_flag = false;
+        for (var i in words_list) {
+            if (!question_flag) {
+                // 如果是选项则后面不需要加到question中
+                if (words_list[i].words[0] == "A") question_flag = true;
+                // 将题目读取到下划线处，如果读到下划线则不需要加到question中
+                // 利用location之差判断是否之中有下划线
+                /**
+                 * location:
+                 * 识别到的文字块的区域位置信息，列表形式，
+                 * location["left"]表示定位位置的长方形左上顶点的水平坐标
+                 * location["top"]表示定位位置的长方形左上顶点的垂直坐标
+                 */
+               // if (words_list[0].words.indexOf(".") != -1 && i > 0 && Math.abs(words_list[i].location["left"] - words_list[i - 1].location["left"]) > 100) {
+               //   question_flag = true;
+               //   log("识别到的文字块的区域位置信息，列表形式");
+               // }
+                if (!question_flag) question += words_list[i].words;
+                // 如果question已经大于25了也不需要读取了
+                var flag = (question.length > 30);
+                //log(flag + "问题：" + question);
+                if (question.length > 30) {
+                  question_flag = true;
+                  //log("question已经大于25" + question);
+                }
+            }
+            // 这里不能用else，会漏读一次
+            if (question_flag) {
+                var alpha = "ABCD";
+                // 其他的就是选项了
+                option = ocr_processing(words_list[i].words, false);
+                if (words_list[i].words[1] == ".") options_text.push(option.slice(2));
+                else if (alpha.indexOf(words_list[i].words[0]) != -1) options_text.push(option.slice(1));
+            }
+        }
+    }
+    // 处理question
+    
+    //question = question.replace(/\s*/g, "");
+    //question = question.replace(/,/g, "，");
+    //question = question.replace(/\-/g, "－");
+    //question = question.replace(/\(/g, "（");
+    //question = question.replace(/\)/g, "）");
+    // 拼音修改
+    question = question.replace(/ā/g, "a");
+    question = question.replace(/á/g, "a");
+    question = question.replace(/ǎ/g, "a");
+    question = question.replace(/à/g, "a");
+    question = question.replace(/ō/g, "o");
+    question = question.replace(/ó/g, "o");
+    question = question.replace(/ǒ/g, "o");
+    question = question.replace(/ò/g, "o");
+    question = question.replace(/ē/g, "e");
+    question = question.replace(/é/g, "e");
+    question = question.replace(/ě/g, "e");
+    question = question.replace(/è/g, "e");
+    question = question.replace(/ī/g, "i");
+    question = question.replace(/í/g, "i");
+    question = question.replace(/ǐ/g, "i");
+    question = question.replace(/ì/g, "i");
+    question = question.replace(/ū/g, "u");
+    question = question.replace(/ú/g, "u");
+    question = question.replace(/ǔ/g, "u");
+    question = question.replace(/ù/g, "u");
+    if(question[question.length - 1] == "O" || question[question.length - 1] == "0"){
+      question = question.slice(0, -1);
+    }
+  	question = question.replace(/\s*/g, "");
+    question = question.replace(/[,，。（）\-\(\)\"\'－“”《》、‘’；：·]/g, "");
+    //log("处理中question" + question);
+    question = question.slice(question.indexOf(".") + 1);
+    question = question.slice(0, 20);
+    //log("处理后q:" + question + "| option:" + options_text)
+    //if(question[-1] == "。"){
+    //	question = question.slice(0, -1);
+    //}
+    return [question, options_text];
+}
+
+/**
+ * 本地ocr标点错词处理
+ * @param {string} text 需要处理的文本
+ * @param {boolean} if_question 是否处理的是问题（四人赛双人对战）
+ */
+function ocr_processing(text, if_question) {
+    // 标点修改
+    text = text.replace(/,/g, "，");
+    text = text.replace(/\s*/g, "");
+    text = text.replace(/_/g, "一");
+    text = text.replace(/\-/g, "－");
+    text = text.replace(/;/g, "；");
+    text = text.replace(/`/g, "、");
+    text = text.replace(/\?/g, "？");
+    text = text.replace(/:/g, "：");
+    text = text.replace(/!/g, "！");
+    text = text.replace(/\(/g, "（");
+    text = text.replace(/\)/g, "）");
+    // 拼音修改
+    text = text.replace(/ā/g, "a");
+    text = text.replace(/á/g, "a");
+    text = text.replace(/ǎ/g, "a");
+    text = text.replace(/à/g, "a");
+    text = text.replace(/ō/g, "o");
+    text = text.replace(/ó/g, "o");
+    text = text.replace(/ǒ/g, "o");
+    text = text.replace(/ò/g, "o");
+    text = text.replace(/ē/g, "e");
+    text = text.replace(/é/g, "e");
+    text = text.replace(/ě/g, "e");
+    text = text.replace(/è/g, "e");
+    text = text.replace(/ī/g, "i");
+    text = text.replace(/í/g, "i");
+    text = text.replace(/ǐ/g, "i");
+    text = text.replace(/ì/g, "i");
+    text = text.replace(/ū/g, "u");
+    text = text.replace(/ú/g, "u");
+    text = text.replace(/ǔ/g, "u");
+    text = text.replace(/ù/g, "u");
+    text = text.replace(/[,，。（）\-\(\)\"\'－“”《》、‘’；：·]/g, "");
+
+    if (if_question) {
+        text = text.slice(text.indexOf(".") + 1);
+        text = text.slice(0, 25);
+    }
+    return text;
+}
+/**
+ * 获取当前时间
+ * 时:分:秒.毫秒
+ */
+function time_now() {
+    var now = new Date();
+    var hours = now.getHours();
+    var minutes = now.getMinutes();
+    var seconds = now.getSeconds();
+    var milliseconds = now.getMilliseconds();
+		
+  	var time = hours + ':' + minutes + ':' + seconds + '.' + milliseconds + ' ';
+  	return time;
+}
+
+/**
  * 检查和设置运行环境
  * @param whether_improve_accuracy {String} 是否提高ocr精度 "yes":开启; "no"(默认):不开启
  * @param AK {String} 百度API KEY
@@ -81,8 +358,6 @@ var special_problem = "选择正确的读音 选择词语的正确词形 下列�
 var special_problem2 = "根据《中国共 根据《中华人 《中华人民共 根据《化妆品";
 var special_problem3 = "下列选项中，";
 
-// 远程报告
-const logs = [];
 /**
  * hash函数，7853质数，重新算出的最优值，具体可以看评估代码
  * @param string {String} 需要计算hash值的String
@@ -196,6 +471,7 @@ function map_update() {
     var symbol = "。、。”，？（）";
     for (var question in answer_question_bank) {
         var answer = answer_question_bank[question];
+        answer = answer.replace(/[,，。（）\-\(\)\"\'－“”《》、‘’；：·]/g, "");
         if (special_problem.indexOf(question.slice(0, 7)) != -1){
           question = question.slice(question.indexOf("|") + 1);
           //q = ""
@@ -487,114 +763,6 @@ function get_baidu_token() {
 if (whether_improve_accuracy == "yes") var token = get_baidu_token();
 
 /**
- * 百度ocr接口，传入图片返回文字和选项文字
- * @param {image} img 传入图片
- * @returns {string} question 文字
- * @returns {list[string]} options_text 选项文字
- */
-function baidu_ocr_api(img) {
-    var options_text = [];
-    var question = "";
-    //log("ocr请求前");
-    var res = http.post(
-        "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic",
-        {
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded"
-            },
-            access_token: token,
-            image: images.toBase64(img),
-        }
-    );
-    //log("ocr请求后")
-    var res = res.body.json();
-    log(res);
-    try {
-        var words_list = res.words_result;
-    } catch (error) {
-    }
-    if (words_list) {
-        // question是否读取完成的标志位
-        var question_flag = false;
-        for (var i in words_list) {
-            if (!question_flag) {
-                // 如果是选项则后面不需要加到question中
-                if (words_list[i].words[0] == "A") question_flag = true;
-                // 将题目读取到下划线处，如果读到下划线则不需要加到question中
-                // 利用location之差判断是否之中有下划线
-                /**
-                 * location:
-                 * 识别到的文字块的区域位置信息，列表形式，
-                 * location["left"]表示定位位置的长方形左上顶点的水平坐标
-                 * location["top"]表示定位位置的长方形左上顶点的垂直坐标
-                 */
-               // if (words_list[0].words.indexOf(".") != -1 && i > 0 && Math.abs(words_list[i].location["left"] - words_list[i - 1].location["left"]) > 100) {
-               //   question_flag = true;
-               //   log("识别到的文字块的区域位置信息，列表形式");
-               // }
-                if (!question_flag) question += words_list[i].words;
-                // 如果question已经大于25了也不需要读取了
-                var flag = (question.length > 30);
-                //log(flag + "问题：" + question);
-                if (question.length > 30) {
-                  question_flag = true;
-                  //log("question已经大于25" + question);
-                }
-            }
-            // 这里不能用else，会漏读一次
-            if (question_flag) {
-                var alpha = "ABCD";
-                // 其他的就是选项了
-                option = ocr_processing(words_list[i].words, false);
-                if (words_list[i].words[1] == ".") options_text.push(option.slice(2));
-                else if (alpha.indexOf(words_list[i].words[0]) != -1) options_text.push(option.slice(1));
-            }
-        }
-    }
-    // 处理question
-    
-    //question = question.replace(/\s*/g, "");
-    //question = question.replace(/,/g, "，");
-    //question = question.replace(/\-/g, "－");
-    //question = question.replace(/\(/g, "（");
-    //question = question.replace(/\)/g, "）");
-    // 拼音修改
-    question = question.replace(/ā/g, "a");
-    question = question.replace(/á/g, "a");
-    question = question.replace(/ǎ/g, "a");
-    question = question.replace(/à/g, "a");
-    question = question.replace(/ō/g, "o");
-    question = question.replace(/ó/g, "o");
-    question = question.replace(/ǒ/g, "o");
-    question = question.replace(/ò/g, "o");
-    question = question.replace(/ē/g, "e");
-    question = question.replace(/é/g, "e");
-    question = question.replace(/ě/g, "e");
-    question = question.replace(/è/g, "e");
-    question = question.replace(/ī/g, "i");
-    question = question.replace(/í/g, "i");
-    question = question.replace(/ǐ/g, "i");
-    question = question.replace(/ì/g, "i");
-    question = question.replace(/ū/g, "u");
-    question = question.replace(/ú/g, "u");
-    question = question.replace(/ǔ/g, "u");
-    question = question.replace(/ù/g, "u");
-    if(question[question.length - 1] == "O" || question[question.length - 1] == "0"){
-      question = question.slice(0, -1);
-    }
-  	question = question.replace(/\s*/g, "");
-    question = question.replace(/[,，。（）\-\(\)\"\'－“”《》、‘’；：·]/g, "");
-    //log("处理中question" + question);
-    question = question.slice(question.indexOf(".") + 1);
-    question = question.slice(0, 20);
-    //log("处理后q:" + question + "| option:" + options_text)
-    //if(question[-1] == "。"){
-    //	question = question.slice(0, -1);
-    //}
-    return [question, options_text];
-}
-
-/**
  * 从ocr.recognize()中提取出题目和选项文字
  * @param {object} object ocr.recongnize()返回的json对象
  * @returns {string} question 文字
@@ -636,52 +804,6 @@ function extract_ocr_recognize(object) {
     return [question, options_text];
 }
 
-/**
- * 本地ocr标点错词处理
- * @param {string} text 需要处理的文本
- * @param {boolean} if_question 是否处理的是问题（四人赛双人对战）
- */
-function ocr_processing(text, if_question) {
-    // 标点修改
-    text = text.replace(/,/g, "，");
-    text = text.replace(/\s*/g, "");
-    text = text.replace(/_/g, "一");
-    text = text.replace(/\-/g, "－");
-    text = text.replace(/;/g, "；");
-    text = text.replace(/`/g, "、");
-    text = text.replace(/\?/g, "？");
-    text = text.replace(/:/g, "：");
-    text = text.replace(/!/g, "！");
-    text = text.replace(/\(/g, "（");
-    text = text.replace(/\)/g, "）");
-    // 拼音修改
-    text = text.replace(/ā/g, "a");
-    text = text.replace(/á/g, "a");
-    text = text.replace(/ǎ/g, "a");
-    text = text.replace(/à/g, "a");
-    text = text.replace(/ō/g, "o");
-    text = text.replace(/ó/g, "o");
-    text = text.replace(/ǒ/g, "o");
-    text = text.replace(/ò/g, "o");
-    text = text.replace(/ē/g, "e");
-    text = text.replace(/é/g, "e");
-    text = text.replace(/ě/g, "e");
-    text = text.replace(/è/g, "e");
-    text = text.replace(/ī/g, "i");
-    text = text.replace(/í/g, "i");
-    text = text.replace(/ǐ/g, "i");
-    text = text.replace(/ì/g, "i");
-    text = text.replace(/ū/g, "u");
-    text = text.replace(/ú/g, "u");
-    text = text.replace(/ǔ/g, "u");
-    text = text.replace(/ù/g, "u");
-
-    if (if_question) {
-        text = text.slice(text.indexOf(".") + 1);
-        text = text.slice(0, 25);
-    }
-    return text;
-}
 
 /*
 ********************四人赛、双人对战********************
@@ -735,103 +857,7 @@ function handling_access_exceptions() {
 */
 var thread_handling_access_exceptions = handling_access_exceptions();
 
-/**
- * 答题
- */
-function do_contest() {
-    while (!text("开始").exists());
-    var i = 0;
-    var img = images.inRange(captureScreen(), "#000000", "#444444");
-  	var img2 = captureScreen();
-    var pos = 0;
-    var s = 0;
-    while (!text("继续挑战").exists()) {
-        // 等待下一题题目加载
-        log("等待题");
-        
-        className("android.view.View").depth(28).waitFor();
-        pos = className("android.view.View").depth(28).findOne().bounds();
-      	if (className("android.view.View").text("        ").exists()) pos = className("android.view.View").text("        ").findOne().bounds();
-        log(pos);
-        if (i == 0) {
-          log("sleep before");
-          sleep(50);
-        	img = images.inRange(captureScreen(), "#000000", "#444444");
-        	//log("首次截图 end " + i);
-        }
-        else {
-          //log("找到第一个");
-          //if (className("android.view.View").text("        ").exists()) {
-          //  pos = className("android.view.View").text("        ").findOne().bounds();
-          //  log("有空格的文本");
-          //}
-          var cnt = 0;
-          do {
-            	img2.recycle();
-              var img2 = captureScreen();
-              var point = findColor(img2, "#1B1F25", {
-                  region: [pos.left, pos.top, pos.width(), pos.height()],
-                  threshold: 10,
-              });
-              cnt = cnt + 1
-          } while (!point); 
-          var name = '/sdcard/Download/color_' + Date.now().toString() + '__' + cnt + '.jpg'
-        	images.save(img2, name, 'jpg', '50');
-          img2.recycle();
-        	// 等待选项加载
-        	className("android.widget.RadioButton").depth(32).clickable(true).waitFor();
-         
-        	log("----选项出现" + i);
-          img = images.inRange(captureScreen(), "#000000", "#444444");
-        }
-        i = i + 1;
-        img = images.clip(img, pos.left, pos.top, pos.width(), device.height - pos.top);
-        var name = '/sdcard/Download/' + Date.now().toString() + '__' + i + '.jpg'
-        images.save(img, name, 'jpg', '50');
-        log("----截图保存完成2");
-        if (whether_improve_accuracy == "yes") {
-            //log("OCR前");
-            var result = baidu_ocr_api(img);
-            //log("OCR后");
-            var question = result[0];
-            var options_text = result[1];
-        } else {
-            try {
-                var result = extract_ocr_recognize(ocr.recognize(img));
-                var question = result[0];
-                var options_text = result[1];
-            } catch (error) {
-            }
-        }
-        img.recycle();
-        log("题目: " + question);
-        log("选项: " + options_text);
-        if (question) {
-          do_contest_answer(32, question, options_text);
-        	//log("选择选项后");
-        }
-        else {
-            className("android.widget.RadioButton").depth(32).waitFor();
-            className("android.widget.RadioButton").depth(32).findOne(delay_time).click();
-          	log("没找到选项");
-        }
-        log("答题完成： " + i);
-       	
-        
-        log("下一题准备");
-        
-        // 等待新题目加载
-        while (!textMatches(/第\d题/).exists() && !text("继续挑战").exists() && !text("开始").exists()){
-        	log(textMatches(/第\d题/).exists());
-        	log(text("继续挑战").exists());
-        	log(text("开始").exists());
-          sleep(random_time(100));
-        }
-        log(textMatches(/第\d题/).exists());
-        log(text("继续挑战").exists());
-        log(text("开始").exists());
-    }
-}
+
 
 if (!className("android.view.View").depth(22).text("学习积分").exists()) {
     app.launchApp("学习强国");
@@ -859,10 +885,12 @@ if (four_player_battle == "yes") {
     var a = className("android.view.View").depth(22);
     log(a);
     className("android.view.View").depth(22).text("学习积分").waitFor();
-    entry_model(9);
+    entry_model(10);
     for (var i = 0; i < count; i++) {
         sleep(random_time(delay_time));
+        log("pos -1:" + text("开始").exists());
         my_click_clickable("开始比赛");
+        log("pos 0:" + text("开始").exists());
         do_contest();
         sleep(random_time(delay_time * 3));
         my_click_clickable("继续挑战");
@@ -883,7 +911,7 @@ if (two_player_battle == "yes") {
 
     if (!className("android.view.View").depth(22).text("学习积分").exists()) back_track();
     className("android.view.View").depth(22).text("学习积分").waitFor();
-    entry_model(10);
+    entry_model(11);
 
     // 点击随机匹配
     text("随机匹配").waitFor();
